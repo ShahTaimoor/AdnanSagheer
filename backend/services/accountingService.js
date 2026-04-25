@@ -127,8 +127,8 @@ class AccountingService {
           transaction_id, transaction_date, account_code,
           debit_amount, credit_amount, description,
           reference_type, reference_id, reference_number,
-          customer_id, supplier_id, currency, status, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          customer_id, supplier_id, bank_id, currency, status, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING *`,
         [
           `${transactionId}-1`,
@@ -142,6 +142,7 @@ class AccountingService {
           metadata.referenceNumber,
           metadata.customerId,
           metadata.supplierId,
+          metadata.bankId || entry1.bankId || null,
           metadata.currency || 'PKR',
           metadata.status || 'completed',
           isValidUuid(metadata.createdBy) ? metadata.createdBy : null
@@ -154,8 +155,8 @@ class AccountingService {
           transaction_id, transaction_date, account_code,
           debit_amount, credit_amount, description,
           reference_type, reference_id, reference_number,
-          customer_id, supplier_id, currency, status, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          customer_id, supplier_id, bank_id, currency, status, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING *`,
         [
           `${transactionId}-2`,
@@ -169,6 +170,7 @@ class AccountingService {
           metadata.referenceNumber,
           metadata.customerId,
           metadata.supplierId,
+          metadata.bankId || entry2.bankId || null,
           metadata.currency || 'PKR',
           metadata.status || 'completed',
           metadata.createdBy
@@ -305,6 +307,67 @@ class AccountingService {
   }
 
   /**
+   * Get unified balance for any account type (Customer, Supplier, Bank, COA)
+   * This is the central source of truth for all balance checks.
+   * @param {string} id - UUID or Account Code
+   * @param {'customer'|'supplier'|'bank'|'coa'} type
+   * @param {Date|null} asOfDate
+   */
+  static async getUnifiedBalance(id, type, asOfDate = null) {
+    switch (type) {
+      case 'customer':
+        return await this.getCustomerBalance(id, asOfDate);
+      case 'supplier':
+        return await this.getSupplierBalance(id, asOfDate);
+      case 'bank':
+        return await this.getAccountBalance('1001', asOfDate, { useDbFallback: true }); // Bank Account
+      case 'coa':
+        return await this.getAccountBalance(id, asOfDate);
+      default:
+        throw new Error(`Invalid account type for unified balance: ${type}`);
+    }
+  }
+
+  /**
+   * Centralized method to record inventory value changes (Debit/Credit Inventory Asset)
+   * This ensures physical stock movements always have a corresponding financial entry.
+   */
+  static async recordInventoryValueChange(params, client = null) {
+    const { productId, delta, unitCost, reason, referenceType, referenceId, referenceNumber, createdBy, transactionDate } = params;
+    
+    const amount = Math.abs(Math.round(delta * unitCost * 100) / 100);
+    if (amount < 0.01) return null;
+
+    const entry1 = {
+      accountCode: '1200', // Inventory Asset
+      debitAmount: delta > 0 ? amount : 0,
+      creditAmount: delta < 0 ? amount : 0,
+      description: `${reason} (${Math.abs(delta)} units)`
+    };
+
+    // Offset account: Retained Earnings (3100) for adjustments, or specific accounts based on reference
+    let offsetAccount = '3100';
+    if (referenceType === 'sale') offsetAccount = '5000'; // COGS
+    if (referenceType === 'purchase_invoice') offsetAccount = '2000'; // Accounts Payable (usually handled by recordPurchaseInvoice)
+
+    const entry2 = {
+      accountCode: offsetAccount,
+      debitAmount: delta < 0 ? amount : 0,
+      creditAmount: delta > 0 ? amount : 0,
+      description: `Inventory Offset: ${referenceNumber || reason}`
+    };
+
+    return await this.createTransaction(entry1, entry2, {
+      referenceType: referenceType || 'inventory_adjustment',
+      referenceId,
+      referenceNumber,
+      transactionDate: transactionDate || new Date(),
+      currency: 'PKR',
+      createdBy
+    }, client);
+  }
+
+  /**
    * Get customer balance from ledger
    * Only includes AR account (1100) entries - single source of truth
    */
@@ -383,6 +446,74 @@ class AccountingService {
     const row = result.rows[0];
     return parseFloat(row.opening_balance || 0) + parseFloat(row.ledger_balance || 0);
   }
+
+  /**
+   * Get ledger-calculated balance for a specific bank account
+   * @param {string} bankId - Bank UUID
+   * @param {Date} asOfDate - Optional end date
+   * @returns {Promise<number>}
+   */
+  static async getBankBalance(bankId, asOfDate = null) {
+    const dateFilter = asOfDate ? 'AND l.transaction_date <= $2' : '';
+    const params = [bankId];
+    if (asOfDate) params.push(asOfDate);
+
+    const result = await query(
+      `SELECT 
+        b.opening_balance,
+        COALESCE(SUM(l.debit_amount - l.credit_amount), 0) AS ledger_balance
+       FROM banks b
+       LEFT JOIN account_ledger l ON b.id = l.bank_id
+         AND l.account_code = '1001'
+         AND l.status = 'completed'
+         AND l.reversed_at IS NULL
+         AND (l.reference_type IS NULL OR l.reference_type <> 'bank_opening_balance')
+         ${dateFilter}
+       WHERE b.id = $1
+       GROUP BY b.id, b.opening_balance`,
+      params
+    );
+
+    if (result.rows.length === 0) return 0;
+    const row = result.rows[0];
+    return parseFloat(row.opening_balance || 0) + parseFloat(row.ledger_balance || 0);
+  }
+
+  /**
+   * Get ledger-calculated balances for multiple bank accounts
+   * @param {Array<string>} bankIds - Array of Bank UUIDs
+   * @param {Date} asOfDate - Optional end date
+   * @returns {Promise<Object>} Map of bankId -> balance
+   */
+  static async getBulkBankBalances(bankIds, asOfDate = null) {
+    if (!bankIds || bankIds.length === 0) return {};
+    const dateFilter = asOfDate ? 'AND l.transaction_date <= $1' : '';
+    const params = asOfDate ? [asOfDate] : [];
+
+    const result = await query(
+      `SELECT 
+        b.id,
+        b.opening_balance,
+        COALESCE(SUM(l.debit_amount - l.credit_amount), 0) AS ledger_balance
+       FROM banks b
+       LEFT JOIN account_ledger l ON b.id = l.bank_id
+         AND l.account_code = '1001'
+         AND l.status = 'completed'
+         AND l.reversed_at IS NULL
+         AND (l.reference_type IS NULL OR l.reference_type <> 'bank_opening_balance')
+         ${dateFilter}
+       WHERE b.id = ANY($${params.length + 1})
+       GROUP BY b.id, b.opening_balance`,
+      [...params, bankIds]
+    );
+
+    const balances = {};
+    result.rows.forEach(row => {
+      balances[row.id] = parseFloat(row.opening_balance || 0) + parseFloat(row.ledger_balance || 0);
+    });
+    return balances;
+  }
+
 
   /**
    * Post or update supplier opening balance in account ledger
@@ -488,6 +619,7 @@ class AccountingService {
             referenceType: 'bank_opening_balance',
             referenceId: bankId,
             referenceNumber: refNum,
+            bankId: bankId,
             transactionDate: txnDate,
             currency: 'PKR',
             createdBy
@@ -502,6 +634,7 @@ class AccountingService {
             referenceType: 'bank_opening_balance',
             referenceId: bankId,
             referenceNumber: refNum,
+            bankId: bankId,
             transactionDate: txnDate,
             currency: 'PKR',
             createdBy
@@ -1217,6 +1350,7 @@ class AccountingService {
       supplierId: supplierId || null,
       partyType: partyType,
       partyId: partyId,
+      bankId: bankReceipt.bank_id || bankReceipt.bankId,
       transactionDate: bankReceipt.date || bankReceipt.transactionDate || new Date(),
       currency: 'PKR',
       createdBy: bankReceipt.created_by || bankReceipt.createdBy
@@ -1263,11 +1397,62 @@ class AccountingService {
       referenceType: 'cash_payment',
       referenceId: cashPayment.id,
       referenceNumber: refNum,
-      customerId: null,
-      supplierId: null,
+      customerId: cashPayment.customer_id || cashPayment.customerId || null,
+      supplierId: cashPayment.supplier_id || cashPayment.supplierId || null,
       transactionDate: cashPayment.date || cashPayment.transactionDate || new Date(),
       currency: 'PKR',
       createdBy: cashPayment.created_by || cashPayment.createdBy
+    }, client);
+  }
+
+  /**
+   * Record bank payment for an expense (posts to account_ledger: Expense Account and Bank Account).
+   * Unlike recordBankPayment, this debits a specific expense account instead of AR/AP.
+   * However, it still links to a customer or supplier for tracking purposes as required.
+   * 
+   * @param {Object} bankPayment - Bank payment data
+   * @param {string} expenseAccountId - Expense account UUID
+   * @param {Object} client - Optional PostgreSQL client for existing transaction
+   */
+  static async recordExpenseBankPayment(bankPayment, expenseAccountId, client = null) {
+    const q = client ? client.query.bind(client) : query;
+    const accountResult = await q(
+      'SELECT account_code, allow_direct_posting FROM chart_of_accounts WHERE id = $1 AND is_active = TRUE AND deleted_at IS NULL',
+      [expenseAccountId]
+    );
+    if (!accountResult.rows.length) {
+      throw new Error('Expense account not found or inactive');
+    }
+    const expenseAccountCode = accountResult.rows[0].account_code;
+    const amount = parseFloat(bankPayment.amount);
+    const supplierId = bankPayment.supplier_id || bankPayment.supplierId;
+    const customerId = bankPayment.customer_id || bankPayment.customerId;
+    const refNum = bankPayment.payment_number || bankPayment.paymentNumber || bankPayment.id;
+
+    const entry1 = {
+      accountCode: expenseAccountCode,
+      debitAmount: amount,
+      creditAmount: 0,
+      description: `Expense: ${bankPayment.particular || refNum}`
+    };
+
+    const entry2 = {
+      accountCode: '1001', // Bank Account
+      debitAmount: 0,
+      creditAmount: amount,
+      description: `Bank Payment: ${refNum}`
+    };
+
+    return await this.createTransaction(entry1, entry2, {
+      referenceType: 'bank_payment',
+      referenceId: bankPayment.id,
+      referenceNumber: refNum,
+      customerId: customerId || null,
+      supplierId: supplierId || null,
+      bankId: bankPayment.bank_id || bankPayment.bankId,
+      transactionDate: bankPayment.date || bankPayment.transactionDate || new Date(),
+      currency: 'PKR',
+      createdBy: bankPayment.created_by || bankPayment.createdBy
     }, client);
   }
 
@@ -1480,6 +1665,7 @@ class AccountingService {
       supplierId: supplierId || null,
       partyType: partyType,
       partyId: partyId,
+      bankId: bankPayment.bank_id || bankPayment.bankId,
       transactionDate: bankPayment.date || bankPayment.transactionDate || new Date(),
       currency: 'PKR',
       createdBy: bankPayment.created_by || bankPayment.createdBy
@@ -1963,6 +2149,7 @@ class AccountingService {
         reference_number: voucher.voucherNumber || voucher.voucher_number || `JV-${voucher.id?.substring(0, 8)}`,
         customer_id: entry.customerId || entry.customer_id || null,
         supplier_id: entry.supplierId || entry.supplier_id || null,
+        bank_id: entry.bankId || entry.bank_id || null,
         currency: 'PKR',
         status: 'completed',
         created_by: isValidUuid(createdBy) ? createdBy : null
@@ -1980,8 +2167,8 @@ class AccountingService {
             transaction_id, transaction_date, account_code,
             debit_amount, credit_amount, description,
             reference_type, reference_id, reference_number,
-            customer_id, supplier_id, currency, status, created_by
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+            customer_id, supplier_id, bank_id, currency, status, created_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
           [
             entry.transaction_id,
             entry.transaction_date,
@@ -1994,6 +2181,7 @@ class AccountingService {
             entry.reference_number,
             entry.customer_id,
             entry.supplier_id,
+            entry.bank_id,
             entry.currency,
             entry.status,
             entry.created_by

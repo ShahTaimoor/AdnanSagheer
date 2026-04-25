@@ -1,5 +1,6 @@
 const userRepository = require('../repositories/postgres/UserRepository');
 const jwt = require('jsonwebtoken');
+const ipaddr = require('ipaddr.js');
 const logger = require('../utils/logger');
 
 class AuthService {
@@ -75,6 +76,7 @@ class AuthService {
       await userRepository.incrementLoginAttempts(user.id);
       throw new Error('Invalid credentials');
     }
+
 
     // Reset login attempts on successful login
     if (user.loginAttempts > 0) {

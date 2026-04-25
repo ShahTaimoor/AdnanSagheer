@@ -40,6 +40,11 @@ import { useFuzzySearch } from '../hooks/useFuzzySearch';
 import { SearchableDropdown } from '../components/SearchableDropdown';
 import { DualUnitQuantityInput } from '../components/DualUnitQuantityInput';
 import {
+  usePostJournalMutation,
+  useGetTrialBalanceQuery,
+  useGetUnifiedBalanceQuery
+} from '../store/services/accountingApi';
+import {
   hasDualUnit,
   getPiecesPerBox,
   piecesToBoxesAndPieces,
@@ -80,6 +85,7 @@ import { getComponentInfo } from '../components/ComponentRegistry';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompanyInfo } from '../hooks/useCompanyInfo';
 
+import { PERMISSIONS } from '../config/rbacConfig';
 import { getLocalDateString } from '../utils/dateUtils';
 
 import { ProductSearch } from '../components/sales/ProductSearch';
@@ -165,7 +171,7 @@ export const Sales = ({ tabId, editData }) => {
 
   const allowSaleWithoutProductEnabled = companySettings.orderSettings?.allowSaleWithoutProduct === true;
   const allowManualCostPriceEnabled = companySettings.orderSettings?.allowManualCostPrice === true;
-  const globalShowCostPriceAllowed = companySettings.orderSettings?.showCostPrice !== false; // Default to true if not set
+  const globalShowCostPriceAllowed = companySettings.orderSettings?.showCostPrice !== false && hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS);
 
   const dualUnitShowBoxInputEnabled = companySettings.orderSettings?.dualUnitShowBoxInput !== false;
   const dualUnitShowPiecesInputEnabled = companySettings.orderSettings?.dualUnitShowPiecesInput !== false;
@@ -445,7 +451,21 @@ export const Sales = ({ tabId, editData }) => {
     refetchOnMountOrArgChange: true,
     refetchOnFocus: true // Refetch when window regains focus
   });
+
+  // Use centralized unified balance instead of entity-specific balance
+  const { data: unifiedBalanceData } = useGetUnifiedBalanceQuery({
+    type: 'customer',
+    id: selectedCustomerId
+  }, {
+    skip: !selectedCustomerId
+  });
+
   const customerWithBalance = selectedCustomerDetail?.data?.customer ?? selectedCustomerDetail?.customer ?? selectedCustomerDetail ?? selectedCustomer;
+  // Override balance with centralized ledger balance if available
+  const currentBalanceNum = unifiedBalanceData?.balance ?? (
+    customerWithBalance?.currentBalance !== undefined ? Number(customerWithBalance.currentBalance) :
+      (Number(customerWithBalance?.pendingBalance ?? 0) - Number(customerWithBalance?.advanceBalance ?? 0))
+  );
 
   const activeBanks = useMemo(
     () => {
@@ -1276,10 +1296,10 @@ export const Sales = ({ tabId, editData }) => {
         if (isManualLine) {
           const uc = Number(
             item.product?.pricing?.cost ??
-              item.product?.pricing?.cost_price ??
-              item.product?.cost_price ??
-              item.product?.costPrice ??
-              0
+            item.product?.pricing?.cost_price ??
+            item.product?.cost_price ??
+            item.product?.costPrice ??
+            0
           );
           if (Number.isFinite(uc) && uc >= 0) {
             base.unitCost = uc;
@@ -1353,10 +1373,10 @@ export const Sales = ({ tabId, editData }) => {
           if (isManualLine) {
             const uc = Number(
               item.product?.pricing?.cost ??
-                item.product?.pricing?.cost_price ??
-                item.product?.cost_price ??
-                item.product?.costPrice ??
-                0
+              item.product?.pricing?.cost_price ??
+              item.product?.cost_price ??
+              item.product?.costPrice ??
+              0
             );
             if (Number.isFinite(uc) && uc >= 0) {
               base.unitCost = uc;
@@ -1524,13 +1544,6 @@ export const Sales = ({ tabId, editData }) => {
               // Then fallback to customerWithBalance (from detail query) if needed
               const balanceSource = selectedCustomer ?? customerWithBalance;
               const creditLimitNum = Math.max(0, Number(selectedCustomer?.creditLimit ?? selectedCustomer?.credit_limit ?? balanceSource?.creditLimit ?? balanceSource?.credit_limit ?? 0) || 0);
-              // Use currentBalance from selectedCustomer first (already correct from bulk query)
-              const rawBalance = selectedCustomer?.currentBalance !== undefined && selectedCustomer?.currentBalance !== null
-                ? Number(selectedCustomer.currentBalance)
-                : (balanceSource?.currentBalance !== undefined && balanceSource?.currentBalance !== null
-                  ? Number(balanceSource.currentBalance)
-                  : (Number(balanceSource?.pendingBalance ?? 0) - Number(balanceSource?.advanceBalance ?? 0)));
-              const currentBalanceNum = (isNaN(rawBalance) || rawBalance === null || rawBalance === undefined) ? 0 : rawBalance;
               const availableCreditNum = Math.max(0, creditLimitNum - currentBalanceNum);
               return (
                 <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
@@ -1615,7 +1628,7 @@ export const Sales = ({ tabId, editData }) => {
                   </Button>
                 )}
                 <div className="flex items-center space-x-2">
-                  {globalShowCostPriceAllowed && (
+                  {hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) && (
                     <Button
                       type="button"
                       onClick={() => setShowCostPrice((prev) => !prev)}
@@ -1637,7 +1650,7 @@ export const Sales = ({ tabId, editData }) => {
                       )}
                     </Button>
                   )}
-                  {user?.role === 'admin' && (
+                  {hasPermission(PERMISSIONS.VIEW_FINANCIAL_DATA) && (
                     <>
                       <Button
                         type="button"
@@ -1697,7 +1710,7 @@ export const Sales = ({ tabId, editData }) => {
               onAddProduct={addToCart}
               selectedCustomer={selectedCustomer}
               showCostPrice={showCostPrice && globalShowCostPriceAllowed}
-              hasCostPricePermission={hasPermission('view_cost_prices')}
+              hasCostPricePermission={hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS)}
               priceType={priceType}
               dualUnitShowBoxInput={dualUnitShowBoxInputEnabled}
               dualUnitShowPiecesInput={dualUnitShowPiecesInputEnabled}
@@ -1738,12 +1751,12 @@ export const Sales = ({ tabId, editData }) => {
               <CartTableHeader
                 className={`hidden md:grid gap-x-1 items-center pb-2 border-b border-gray-300 mb-2 ${dualUnitShowBoxInputEnabled
                   ? (
-                    showCostPrice && hasPermission('view_cost_prices')
+                    showCostPrice && hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS)
                       ? 'grid-cols-[2.25rem_minmax(0,1fr)_4.75rem_5.35rem_5.35rem_5rem_5.35rem_5.35rem_2.25rem]'
                       : 'grid-cols-[2.25rem_minmax(0,1fr)_4.75rem_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
                   )
                   : (
-                    showCostPrice && hasPermission('view_cost_prices')
+                    showCostPrice && hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS)
                       ? 'grid-cols-[2.25rem_minmax(0,1fr)_5.35rem_5.35rem_5rem_5.35rem_5.35rem_2.25rem]'
                       : 'grid-cols-[2.25rem_minmax(0,1fr)_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
                   )
@@ -1754,7 +1767,7 @@ export const Sales = ({ tabId, editData }) => {
                   ...(dualUnitShowBoxInputEnabled ? [{ key: 'box', label: 'Box' }] : []),
                   { key: 'stock', label: 'Stock' },
                   { key: 'qty', label: 'Qty' },
-                  ...(showCostPrice && hasPermission('view_cost_prices') ? [{ key: 'cost', label: 'Cost' }] : []),
+                  ...(showCostPrice && hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) ? [{ key: 'cost', label: 'Cost' }] : []),
                   { key: 'rate', label: 'Rate' },
                   { key: 'total', label: 'Total', labelClassName: 'text-xs font-semibold text-gray-600 uppercase block text-center' },
                   { key: 'action', label: 'Action', wrapperClassName: 'min-w-0 flex justify-end', labelClassName: 'text-xs font-semibold text-gray-600 uppercase text-right' },
@@ -1775,378 +1788,169 @@ export const Sales = ({ tabId, editData }) => {
                 style={{ height: `${cartVirtualizer.getTotalSize()}px` }}
               >
                 {cartVirtualizer.getVirtualItems().map((virtualRow) => {
-              const item = cart[virtualRow.index];
-              const index = virtualRow.index;
-              const totalPrice = item.unitPrice * item.quantity;
-              const isLowStock = item.product.inventory?.currentStock <= item.product.inventory?.reorderPoint;
+                  const item = cart[virtualRow.index];
+                  const index = virtualRow.index;
+                  const totalPrice = item.unitPrice * item.quantity;
+                  const isLowStock = item.product.inventory?.currentStock <= item.product.inventory?.reorderPoint;
 
-              const serialHighlight = highlightedCartLineIndex === index;
+                  const serialHighlight = highlightedCartLineIndex === index;
 
-              return (
-                <div
-                  key={virtualRow.key}
-                  data-index={virtualRow.index}
-                  ref={(node) => {
-                    cartVirtualizer.measureElement(node);
-                    if (node) cartLineElRefs.current.set(index, node);
-                    else cartLineElRefs.current.delete(index);
-                  }}
-                  className="absolute left-0 top-0 w-full"
-                  style={{ transform: `translateY(${virtualRow.start}px)` }}
-                >
-                  {/* Mobile Card View */}
-                  <div className="md:hidden mb-4 p-3 border border-gray-200 rounded-lg bg-white shadow-sm">
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex-1 min-w-0 flex items-center gap-3">
-                        {item.product?.imageUrl && showProductImages && (
-                          <div
-                            className="h-10 w-10 flex-shrink-0 bg-gray-100 rounded overflow-hidden border border-gray-200 cursor-pointer hover:border-primary-500 transition-colors group relative"
-                            onClick={() => setPreviewImageProduct(item.product)}
-                            title="Click to view full size"
-                          >
-                            <img src={item.product.imageUrl} alt="" crossOrigin="anonymous" className="h-full w-full object-cover" />
-                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors">
-                              <Camera className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                            </div>
-                          </div>
-                        )}
-                        <div className="flex flex-col min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span
-                              className={`text-xs font-semibold px-2 py-0.5 rounded transition-colors duration-300 ${
-                                serialHighlight
-                                  ? 'bg-green-100 text-green-800 border border-green-400 ring-2 ring-green-300/80'
-                                  : 'text-gray-500 bg-gray-100'
-                              }`}
-                            >
-                              #{index + 1}
-                            </span>
-                            <span className="font-medium text-sm truncate">
-                              {item.product.isVariant
-                                ? (item.product.displayName || item.product.variantName || item.product.name)
-                                : item.product.name}
-                            </span>
-                          </div>
-                          {item.product.isVariant && (
-                            <span className="text-xs text-gray-500 block">
-                              {item.product.variantType}: {item.product.variantValue}
-                            </span>
-                          )}
-                          <div className="flex flex-wrap items-center gap-2 mt-1">
-                            {isLowStock && <span className="text-yellow-600 text-xs">⚠️ Low Stock</span>}
-                            {lastPurchasePrices[item.product._id] !== undefined &&
-                              item.unitPrice < lastPurchasePrices[item.product._id] && (
-                                <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold">
-                                  ⚠️ Loss
-                                </span>
-                              )}
-                            {isLastPricesApplied && priceStatus[item.product._id] && (
-                              <span className={`text-xs px-1.5 py-0.5 rounded ${priceStatus[item.product._id] === 'updated'
-                                ? 'bg-green-100 text-green-700'
-                                : priceStatus[item.product._id] === 'unchanged'
-                                  ? 'bg-blue-100 text-blue-700'
-                                  : 'bg-yellow-100 text-yellow-700'
-                                }`}>
-                                {priceStatus[item.product._id] === 'updated'
-                                  ? 'Updated'
-                                  : priceStatus[item.product._id] === 'unchanged'
-                                    ? 'Same Price'
-                                    : 'Not in Last Order'}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <LoadingButton
-                        onClick={() => removeFromCart(item.product._id)}
-                        isLoading={isRemovingFromCart[item.product._id]}
-                        variant="destructive"
-                        size="sm"
-                        className="h-8 w-8 p-0 flex-shrink-0 ml-2"
-                        title="Delete"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </LoadingButton>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {hasDualUnit(item.product) && dualUnitShowBoxInputEnabled && (
-                        <div>
-                          <label className="block text-xs font-medium text-gray-500 mb-1">Box</label>
-                          {(() => {
-                            const ppb = getPiecesPerBox(item.product);
-                            const boxVal =
-                              item.boxes != null
-                                ? item.boxes
-                                : ppb
-                                  ? piecesToBoxesAndPieces(item.quantity, ppb).boxes
-                                  : 0;
-                            return (
-                              <input
-                                type="number"
-                                min={0}
-                                value={item.quantity === 0 ? '' : boxVal}
-                                onChange={(e) =>
-                                  updateCartBoxCount(item.product._id, e.target.value)
-                                }
-                                onFocus={(e) => e.target.select()}
-                                className={`text-sm font-semibold w-full rounded border px-2 py-1 text-center focus:outline-none focus:ring-2 focus:ring-primary-500/35 ${(item.product.inventory?.currentStock || 0) === 0
-                                  ? 'text-red-700 bg-red-50 border-red-200'
-                                  : (item.product.inventory?.currentStock || 0) <=
-                                    (item.product.inventory?.reorderPoint || 0)
-                                    ? 'text-yellow-800 bg-yellow-50 border-yellow-200'
-                                    : 'text-gray-700 bg-gray-100 border-gray-200'
-                                  }`}
-                                title="Full boxes"
-                              />
-                            );
-                          })()}
-                        </div>
-                      )}
-                      <div>
-                        <label className="block text-xs font-medium text-gray-500 mb-1">Stock</label>
-                        <span className={`text-sm font-semibold px-2 py-1 rounded border block text-center ${(item.product.inventory?.currentStock || 0) === 0
-                          ? 'text-red-700 bg-red-50 border-red-200'
-                          : (item.product.inventory?.currentStock || 0) <= (item.product.inventory?.reorderPoint || 0)
-                            ? 'text-yellow-700 bg-yellow-50 border-yellow-200'
-                            : 'text-gray-700 bg-gray-100 border-gray-200'
-                          }`}>
-                          {item.product.inventory?.currentStock || 0}
-                        </span>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-500 mb-1">Total</label>
-                        <span className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block text-center">
-                          {Math.round(totalPrice)}
-                        </span>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-500 mb-1">Quantity</label>
-                        <DualUnitQuantityInput
-                          product={item.product}
-                          quantity={item.quantity}
-                          onChange={(q, dual) => updateQuantity(item.product._id, q, dual)}
-                          min={1}
-                          max={999999}
-                          stockPiecesForRemaining={item.product.inventory?.currentStock ?? 0}
-                          showRemainingAfterSale={false}
-                          showPiecesUnitLabel={false}
-                          showBoxInput={dualUnitShowBoxInputEnabled && !hasDualUnit(item.product)}
-                          showPiecesInput={dualUnitShowPiecesInputEnabled}
-                          inputClassName="w-full min-w-0 text-center h-8 border border-gray-300 rounded px-2"
-                          compact={hasDualUnit(item.product)}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-500 mb-1">Rate</label>
-                        <Input
-                          type="number"
-                          step="1"
-                          autoComplete="off"
-                          value={Math.round(item.unitPrice)}
-                          onChange={(e) => updateUnitPrice(item.product._id, parseInt(e.target.value) || 0)}
-                          onFocus={(e) => e.target.select()}
-                          className={`text-center h-8 w-full ${(lastPurchasePrices[item.product._id] !== undefined &&
-                            item.unitPrice < lastPurchasePrices[item.product._id])
-                            ? 'bg-red-50 border-red-400 ring-2 ring-red-300'
-                            : ''
-                            }`}
-                          min="0"
-                        />
-                      </div>
-                      {showCostPrice && hasPermission('view_cost_prices') && (
-                        <div className="col-span-2">
-                          <label className="block text-xs font-medium text-gray-500 mb-1">Cost</label>
-                          <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center">
-                            {lastPurchasePrices[item.product._id] !== undefined
-                              ? `${Math.round(lastPurchasePrices[item.product._id])}`
-                              : 'N/A'}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Desktop Table Row */}
-                  <div className={`hidden md:block py-1 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                  return (
                     <div
-                      className={`grid gap-x-1 items-center ${dualUnitShowBoxInputEnabled
-                        ? (
-                          showCostPrice && hasPermission('view_cost_prices')
-                            ? 'grid-cols-[2.25rem_minmax(0,1fr)_4.75rem_5.35rem_5.35rem_5rem_5.35rem_5.35rem_2.25rem]'
-                            : 'grid-cols-[2.25rem_minmax(0,1fr)_4.75rem_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
-                        )
-                        : (
-                          showCostPrice && hasPermission('view_cost_prices')
-                            ? 'grid-cols-[2.25rem_minmax(0,1fr)_5.35rem_5.35rem_5rem_5.35rem_5.35rem_2.25rem]'
-                            : 'grid-cols-[2.25rem_minmax(0,1fr)_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
-                        )
-                        }`}
+                      key={virtualRow.key}
+                      data-index={virtualRow.index}
+                      ref={(node) => {
+                        cartVirtualizer.measureElement(node);
+                        if (node) cartLineElRefs.current.set(index, node);
+                        else cartLineElRefs.current.delete(index);
+                      }}
+                      className="absolute left-0 top-0 w-full"
+                      style={{ transform: `translateY(${virtualRow.start}px)` }}
                     >
-                      {/* Serial Number - 1 column */}
-                      <div className="min-w-0 flex justify-start">
-                        <span
-                          className={`text-sm font-medium px-0.5 py-1 rounded border block w-8 text-center h-8 flex items-center justify-center transition-colors duration-300 ${
-                            serialHighlight
-                              ? 'bg-green-100 text-green-800 border-green-400 ring-2 ring-green-300/80'
-                              : 'text-gray-700 bg-gray-50 border-gray-200'
-                          }`}
-                        >
-                          {index + 1}
-                        </span>
-                      </div>
-
-                      {/* Product Name - mirror Sales Order layout (6 columns normally, 5 when cost column shown) */}
-                      <div className="min-w-0 flex items-center h-8 gap-2">
-                        {item.product?.imageUrl && showProductImages && (
-                          <div
-                            className="h-8 w-8 flex-shrink-0 bg-gray-100 rounded overflow-hidden border border-gray-200 cursor-pointer hover:border-primary-500 transition-colors group relative"
-                            onClick={() => setPreviewImageProduct(item.product)}
-                            title="Click to view full size"
-                          >
-                            <img src={item.product.imageUrl} alt="" crossOrigin="anonymous" className="h-full w-full object-cover shadow-sm" />
-                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors">
-                              <Camera className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                            </div>
-                          </div>
-                        )}
-                        <div className="flex flex-col min-w-0 w-full">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span
-                              className="font-medium text-sm truncate min-w-0"
-                              title={item.product.isVariant
-                                ? (item.product.displayName || item.product.variantName || item.product.name)
-                                : item.product.name}
-                            >
-                              {item.product.isVariant
-                                ? (item.product.displayName || item.product.variantName || item.product.name)
-                                : item.product.name}
-                            </span>
-                            {isLowStock && <span className="text-yellow-600 text-xs whitespace-nowrap">⚠️ Low Stock</span>}
-                            {/* Warning if sale price is below cost price (always show, regardless of showCostPrice) */}
-                            {lastPurchasePrices[item.product._id] !== undefined &&
-                              item.unitPrice < lastPurchasePrices[item.product._id] && (
-                                <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold whitespace-nowrap" title={`Sale price below cost! Loss: ${Math.round(lastPurchasePrices[item.product._id] - item.unitPrice)} per unit`}>
-                                  ⚠️ Loss
+                      {/* Mobile Card View */}
+                      <div className="md:hidden mb-4 p-3 border border-gray-200 rounded-lg bg-white shadow-sm">
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="flex-1 min-w-0 flex items-center gap-3">
+                            {item.product?.imageUrl && showProductImages && (
+                              <div
+                                className="h-10 w-10 flex-shrink-0 bg-gray-100 rounded overflow-hidden border border-gray-200 cursor-pointer hover:border-primary-500 transition-colors group relative"
+                                onClick={() => setPreviewImageProduct(item.product)}
+                                title="Click to view full size"
+                              >
+                                <img src={item.product.imageUrl} alt="" crossOrigin="anonymous" className="h-full w-full object-cover" />
+                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors">
+                                  <Camera className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </div>
+                              </div>
+                            )}
+                            <div className="flex flex-col min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span
+                                  className={`text-xs font-semibold px-2 py-0.5 rounded transition-colors duration-300 ${serialHighlight
+                                      ? 'bg-green-100 text-green-800 border border-green-400 ring-2 ring-green-300/80'
+                                      : 'text-gray-500 bg-gray-100'
+                                    }`}
+                                >
+                                  #{index + 1}
+                                </span>
+                                <span className="font-medium text-sm truncate">
+                                  {item.product.isVariant
+                                    ? (item.product.displayName || item.product.variantName || item.product.name)
+                                    : item.product.name}
+                                </span>
+                              </div>
+                              {item.product.isVariant && (
+                                <span className="text-xs text-gray-500 block">
+                                  {item.product.variantType}: {item.product.variantValue}
                                 </span>
                               )}
-                            {isLastPricesApplied && priceStatus[item.product._id] && (
-                              <span className={`text-xs px-1.5 py-0.5 rounded whitespace-nowrap ${priceStatus[item.product._id] === 'updated'
-                                ? 'bg-green-100 text-green-700'
-                                : priceStatus[item.product._id] === 'unchanged'
-                                  ? 'bg-blue-100 text-blue-700'
-                                  : 'bg-yellow-100 text-yellow-700'
-                                }`}>
-                                {priceStatus[item.product._id] === 'updated'
-                                  ? 'Updated'
-                                  : priceStatus[item.product._id] === 'unchanged'
-                                    ? 'Same Price'
-                                    : 'Not in Last Order'}
-                              </span>
-                            )}
+                              <div className="flex flex-wrap items-center gap-2 mt-1">
+                                {isLowStock && <span className="text-yellow-600 text-xs">⚠️ Low Stock</span>}
+                                {lastPurchasePrices[item.product._id] !== undefined &&
+                                  hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) &&
+                                  item.unitPrice < lastPurchasePrices[item.product._id] && (
+                                    <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold">
+                                      ⚠️ Loss
+                                    </span>
+                                  )}
+                                {isLastPricesApplied && priceStatus[item.product._id] && (
+                                  <span className={`text-xs px-1.5 py-0.5 rounded ${priceStatus[item.product._id] === 'updated'
+                                    ? 'bg-green-100 text-green-700'
+                                    : priceStatus[item.product._id] === 'unchanged'
+                                      ? 'bg-blue-100 text-blue-700'
+                                      : 'bg-yellow-100 text-yellow-700'
+                                    }`}>
+                                    {priceStatus[item.product._id] === 'updated'
+                                      ? 'Updated'
+                                      : priceStatus[item.product._id] === 'unchanged'
+                                        ? 'Same Price'
+                                        : 'Not in Last Order'}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                          {item.product.isVariant && (
-                            <span className="text-xs text-gray-500 truncate">
-                              {item.product.variantType}: {item.product.variantValue}
-                            </span>
+                          <LoadingButton
+                            onClick={() => removeFromCart(item.product._id)}
+                            isLoading={isRemovingFromCart[item.product._id]}
+                            variant="destructive"
+                            size="sm"
+                            className="h-8 w-8 p-0 flex-shrink-0 ml-2"
+                            title="Delete"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </LoadingButton>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          {hasDualUnit(item.product) && dualUnitShowBoxInputEnabled && (
+                            <div>
+                              <label className="block text-xs font-medium text-gray-500 mb-1">Box</label>
+                              {(() => {
+                                const ppb = getPiecesPerBox(item.product);
+                                const boxVal =
+                                  item.boxes != null
+                                    ? item.boxes
+                                    : ppb
+                                      ? piecesToBoxesAndPieces(item.quantity, ppb).boxes
+                                      : 0;
+                                return (
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={item.quantity === 0 ? '' : boxVal}
+                                    onChange={(e) =>
+                                      updateCartBoxCount(item.product._id, e.target.value)
+                                    }
+                                    onFocus={(e) => e.target.select()}
+                                    className={`text-sm font-semibold w-full rounded border px-2 py-1 text-center focus:outline-none focus:ring-2 focus:ring-primary-500/35 ${(item.product.inventory?.currentStock || 0) === 0
+                                      ? 'text-red-700 bg-red-50 border-red-200'
+                                      : (item.product.inventory?.currentStock || 0) <=
+                                        (item.product.inventory?.reorderPoint || 0)
+                                        ? 'text-yellow-800 bg-yellow-50 border-yellow-200'
+                                        : 'text-gray-700 bg-gray-100 border-gray-200'
+                                      }`}
+                                    title="Full boxes"
+                                  />
+                                );
+                              })()}
+                            </div>
                           )}
-                        </div>
-                      </div>
-
-                      {/* Box — dual-unit boxes only; hidden fully when box input setting is off */}
-                      {dualUnitShowBoxInputEnabled && (
-                        <div className="min-w-0">
-                          {hasDualUnit(item.product) ? (
-                            (() => {
-                              const ppb = getPiecesPerBox(item.product);
-                              const boxVal =
-                                item.boxes != null
-                                  ? item.boxes
-                                  : ppb
-                                    ? piecesToBoxesAndPieces(item.quantity, ppb).boxes
-                                    : 0;
-                              return (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={item.quantity === 0 ? '' : boxVal}
-                                  onChange={(e) =>
-                                    updateCartBoxCount(item.product._id, e.target.value)
-                                  }
-                                  onFocus={(e) => e.target.select()}
-                                  className={`text-sm font-semibold w-full min-w-0 rounded border px-2 py-1 text-center h-8 focus:outline-none focus:ring-2 focus:ring-primary-500/35 ${(item.product.inventory?.currentStock || 0) === 0
-                                    ? 'text-red-700 bg-red-50 border-red-200'
-                                    : (item.product.inventory?.currentStock || 0) <=
-                                      (item.product.inventory?.reorderPoint || 0)
-                                      ? 'text-yellow-800 bg-yellow-50 border-yellow-200'
-                                      : 'text-gray-700 bg-gray-100 border-gray-200'
-                                    }`}
-                                  title="Full boxes"
-                                />
-                              );
-                            })()
-                          ) : (
-                            <span
-                              className="text-sm font-semibold px-2 py-1 rounded border block text-center h-8 flex items-center justify-center text-gray-400 bg-gray-50 border-gray-200"
-                              title="Not applicable"
-                            >
-                              —
+                          <div>
+                            <label className="block text-xs font-medium text-gray-500 mb-1">Stock</label>
+                            <span className={`text-sm font-semibold px-2 py-1 rounded border block text-center ${(item.product.inventory?.currentStock || 0) === 0
+                              ? 'text-red-700 bg-red-50 border-red-200'
+                              : (item.product.inventory?.currentStock || 0) <= (item.product.inventory?.reorderPoint || 0)
+                                ? 'text-yellow-700 bg-yellow-50 border-yellow-200'
+                                : 'text-gray-700 bg-gray-100 border-gray-200'
+                              }`}>
+                              {item.product.inventory?.currentStock || 0}
                             </span>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Stock - 1 column */}
-                      <div className="min-w-0">
-                        <span className={`text-sm font-semibold px-2 py-1 rounded border block text-center h-8 flex items-center justify-center ${(item.product.inventory?.currentStock || 0) === 0
-                          ? 'text-red-700 bg-red-50 border-red-200'
-                          : (item.product.inventory?.currentStock || 0) <= (item.product.inventory?.reorderPoint || 0)
-                            ? 'text-yellow-700 bg-yellow-50 border-yellow-200'
-                            : 'text-gray-700 bg-gray-100 border-gray-200'
-                          }`}>
-                          {item.product.inventory?.currentStock || 0}
-                        </span>
-                      </div>
-
-                      {/* Quantity */}
-                      <div className="min-w-0">
-                        <DualUnitQuantityInput
-                          product={item.product}
-                          quantity={item.quantity}
-                          onChange={(q, dual) => updateQuantity(item.product._id, q, dual)}
-                          min={1}
-                          max={999999}
-                          stockPiecesForRemaining={item.product.inventory?.currentStock ?? 0}
-                          showRemainingAfterSale={false}
-                          showPiecesUnitLabel={false}
-                          showBoxInput={dualUnitShowBoxInputEnabled && !hasDualUnit(item.product)}
-                          showPiecesInput={dualUnitShowPiecesInputEnabled}
-                          inputClassName="w-full min-w-0 text-center h-8 border border-gray-300 rounded px-2"
-                          compact={hasDualUnit(item.product)}
-                        />
-                      </div>
-
-                      {/* Purchase Price (Cost) - 1 column (conditional) - Between Quantity and Rate */}
-                      {showCostPrice && hasPermission('view_cost_prices') && (
-                        <div className="min-w-0">
-                          <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-8 flex items-center justify-center" title="Cost Price">
-                            {lastPurchasePrices[item.product._id] !== undefined
-                              ? `${Math.round(lastPurchasePrices[item.product._id])}`
-                              : item.product.pricing?.cost !== undefined
-                                ? `${Math.round(item.product.pricing.cost)}`
-                                : 'N/A'}
-                          </span>
-                        </div>
-                      )}
-
-                      {/* Rate - 1 column */}
-                      <div className="min-w-0 relative">
-                        {(() => {
-                          const effectiveCost = lastPurchasePrices[item.product._id] !== undefined
-                            ? lastPurchasePrices[item.product._id]
-                            : item.product.pricing?.cost;
-                          const isBelowCost = effectiveCost !== undefined && effectiveCost !== null && item.unitPrice < effectiveCost;
-
-                          return (
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-500 mb-1">Total</label>
+                            <span className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block text-center">
+                              {Math.round(totalPrice)}
+                            </span>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-500 mb-1">Quantity</label>
+                            <DualUnitQuantityInput
+                              product={item.product}
+                              quantity={item.quantity}
+                              onChange={(q, dual) => updateQuantity(item.product._id, q, dual)}
+                              min={1}
+                              max={999999}
+                              stockPiecesForRemaining={item.product.inventory?.currentStock ?? 0}
+                              showRemainingAfterSale={false}
+                              showPiecesUnitLabel={false}
+                              showBoxInput={dualUnitShowBoxInputEnabled && !hasDualUnit(item.product)}
+                              showPiecesInput={dualUnitShowPiecesInputEnabled}
+                              inputClassName="w-full min-w-0 text-center h-8 border border-gray-300 rounded px-2"
+                              compact={hasDualUnit(item.product)}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-500 mb-1">Rate</label>
                             <Input
                               type="number"
                               step="1"
@@ -2154,74 +1958,283 @@ export const Sales = ({ tabId, editData }) => {
                               value={Math.round(item.unitPrice)}
                               onChange={(e) => updateUnitPrice(item.product._id, parseInt(e.target.value) || 0)}
                               onFocus={(e) => e.target.select()}
-                              className={`text-center h-8 ${
-                                // Check if sale price is less than cost price - highest priority styling (always check)
-                                isBelowCost
-                                  ? 'bg-red-50 border-red-400 ring-2 ring-red-300'
-                                  : priceStatus[item.product._id] === 'updated'
-                                    ? 'bg-green-50 border-green-300 ring-1 ring-green-200'
-                                    : priceStatus[item.product._id] === 'not-found'
-                                      ? 'bg-yellow-50 border-yellow-300 ring-1 ring-yellow-200'
-                                      : priceStatus[item.product._id] === 'unchanged'
-                                        ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-200'
-                                        : ''
+                              className={`text-center h-8 w-full ${(lastPurchasePrices[item.product._id] !== undefined &&
+                                item.unitPrice < lastPurchasePrices[item.product._id])
+                                ? 'bg-red-50 border-red-400 ring-2 ring-red-300'
+                                : ''
                                 }`}
                               min="0"
-                              title={
-                                isBelowCost
-                                  ? `⚠️ WARNING: Sale price ($${Math.round(item.unitPrice)}) is below cost price ($${Math.round(effectiveCost)})`
-                                  : ''
-                              }
                             />
-                          );
-                        })()}
-                        {isLastPricesApplied && priceStatus[item.product._id] && (
-                          <div
-                            className="absolute -right-7 top-1/2 transform -translate-y-1/2 flex items-center z-10"
-                            title={
-                              priceStatus[item.product._id] === 'updated'
-                                ? 'Price updated from last order'
-                                : priceStatus[item.product._id] === 'unchanged'
-                                  ? 'Price same as last order'
-                                  : 'Product not found in previous order'
-                            }
-                          >
-                            {priceStatus[item.product._id] === 'updated' && (
-                              <CheckCircle className="h-4 w-4 text-green-600 bg-white rounded-full" />
+                          </div>
+                          {showCostPrice && hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) && (
+                            <div className="col-span-2">
+                              <label className="block text-xs font-medium text-gray-500 mb-1">Cost</label>
+                              <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center">
+                                {lastPurchasePrices[item.product._id] !== undefined
+                                  ? `${Math.round(lastPurchasePrices[item.product._id])}`
+                                  : 'N/A'}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Desktop Table Row */}
+                      <div className={`hidden md:block py-1 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                        <div
+                          className={`grid gap-x-1 items-center ${dualUnitShowBoxInputEnabled
+                            ? (
+                              showCostPrice && hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS)
+                                ? 'grid-cols-[2.25rem_minmax(0,1fr)_4.75rem_5.35rem_5.35rem_5rem_5.35rem_5.35rem_2.25rem]'
+                                : 'grid-cols-[2.25rem_minmax(0,1fr)_4.75rem_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
+                            )
+                            : (
+                              showCostPrice && hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS)
+                                ? 'grid-cols-[2.25rem_minmax(0,1fr)_5.35rem_5.35rem_5rem_5.35rem_5.35rem_2.25rem]'
+                                : 'grid-cols-[2.25rem_minmax(0,1fr)_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
+                            )
+                            }`}
+                        >
+                          {/* Serial Number - 1 column */}
+                          <div className="min-w-0 flex justify-start">
+                            <span
+                              className={`text-sm font-medium px-0.5 py-1 rounded border block w-8 text-center h-8 flex items-center justify-center transition-colors duration-300 ${serialHighlight
+                                  ? 'bg-green-100 text-green-800 border-green-400 ring-2 ring-green-300/80'
+                                  : 'text-gray-700 bg-gray-50 border-gray-200'
+                                }`}
+                            >
+                              {index + 1}
+                            </span>
+                          </div>
+
+                          {/* Product Name - mirror Sales Order layout (6 columns normally, 5 when cost column shown) */}
+                          <div className="min-w-0 flex items-center h-8 gap-2">
+                            {item.product?.imageUrl && showProductImages && (
+                              <div
+                                className="h-8 w-8 flex-shrink-0 bg-gray-100 rounded overflow-hidden border border-gray-200 cursor-pointer hover:border-primary-500 transition-colors group relative"
+                                onClick={() => setPreviewImageProduct(item.product)}
+                                title="Click to view full size"
+                              >
+                                <img src={item.product.imageUrl} alt="" crossOrigin="anonymous" className="h-full w-full object-cover shadow-sm" />
+                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 flex items-center justify-center transition-colors">
+                                  <Camera className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </div>
+                              </div>
                             )}
-                            {priceStatus[item.product._id] === 'unchanged' && (
-                              <Info className="h-4 w-4 text-blue-600 bg-white rounded-full" />
-                            )}
-                            {priceStatus[item.product._id] === 'not-found' && (
-                              <AlertCircle className="h-4 w-4 text-yellow-600 bg-white rounded-full" />
+                            <div className="flex flex-col min-w-0 w-full">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className="font-medium text-sm truncate min-w-0"
+                                  title={item.product.isVariant
+                                    ? (item.product.displayName || item.product.variantName || item.product.name)
+                                    : item.product.name}
+                                >
+                                  {item.product.isVariant
+                                    ? (item.product.displayName || item.product.variantName || item.product.name)
+                                    : item.product.name}
+                                </span>
+                                {isLowStock && <span className="text-yellow-600 text-xs whitespace-nowrap">⚠️ Low Stock</span>}
+                                {/* Warning if sale price is below cost price (only if has permission) */}
+                                {lastPurchasePrices[item.product._id] !== undefined &&
+                                  hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) &&
+                                  item.unitPrice < lastPurchasePrices[item.product._id] && (
+                                    <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold whitespace-nowrap" title={`Sale price below cost! Loss: ${Math.round(lastPurchasePrices[item.product._id] - item.unitPrice)} per unit`}>
+                                      ⚠️ Loss
+                                    </span>
+                                  )}
+                                {isLastPricesApplied && priceStatus[item.product._id] && (
+                                  <span className={`text-xs px-1.5 py-0.5 rounded whitespace-nowrap ${priceStatus[item.product._id] === 'updated'
+                                    ? 'bg-green-100 text-green-700'
+                                    : priceStatus[item.product._id] === 'unchanged'
+                                      ? 'bg-blue-100 text-blue-700'
+                                      : 'bg-yellow-100 text-yellow-700'
+                                    }`}>
+                                    {priceStatus[item.product._id] === 'updated'
+                                      ? 'Updated'
+                                      : priceStatus[item.product._id] === 'unchanged'
+                                        ? 'Same Price'
+                                        : 'Not in Last Order'}
+                                  </span>
+                                )}
+                              </div>
+                              {item.product.isVariant && (
+                                <span className="text-xs text-gray-500 truncate">
+                                  {item.product.variantType}: {item.product.variantValue}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Box — dual-unit boxes only; hidden fully when box input setting is off */}
+                          {dualUnitShowBoxInputEnabled && (
+                            <div className="min-w-0">
+                              {hasDualUnit(item.product) ? (
+                                (() => {
+                                  const ppb = getPiecesPerBox(item.product);
+                                  const boxVal =
+                                    item.boxes != null
+                                      ? item.boxes
+                                      : ppb
+                                        ? piecesToBoxesAndPieces(item.quantity, ppb).boxes
+                                        : 0;
+                                  return (
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      value={item.quantity === 0 ? '' : boxVal}
+                                      onChange={(e) =>
+                                        updateCartBoxCount(item.product._id, e.target.value)
+                                      }
+                                      onFocus={(e) => e.target.select()}
+                                      className={`text-sm font-semibold w-full min-w-0 rounded border px-2 py-1 text-center h-8 focus:outline-none focus:ring-2 focus:ring-primary-500/35 ${(item.product.inventory?.currentStock || 0) === 0
+                                        ? 'text-red-700 bg-red-50 border-red-200'
+                                        : (item.product.inventory?.currentStock || 0) <=
+                                          (item.product.inventory?.reorderPoint || 0)
+                                          ? 'text-yellow-800 bg-yellow-50 border-yellow-200'
+                                          : 'text-gray-700 bg-gray-100 border-gray-200'
+                                        }`}
+                                      title="Full boxes"
+                                    />
+                                  );
+                                })()
+                              ) : (
+                                <span
+                                  className="text-sm font-semibold px-2 py-1 rounded border block text-center h-8 flex items-center justify-center text-gray-400 bg-gray-50 border-gray-200"
+                                  title="Not applicable"
+                                >
+                                  —
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Stock - 1 column */}
+                          <div className="min-w-0">
+                            <span className={`text-sm font-semibold px-2 py-1 rounded border block text-center h-8 flex items-center justify-center ${(item.product.inventory?.currentStock || 0) === 0
+                              ? 'text-red-700 bg-red-50 border-red-200'
+                              : (item.product.inventory?.currentStock || 0) <= (item.product.inventory?.reorderPoint || 0)
+                                ? 'text-yellow-700 bg-yellow-50 border-yellow-200'
+                                : 'text-gray-700 bg-gray-100 border-gray-200'
+                              }`}>
+                              {item.product.inventory?.currentStock || 0}
+                            </span>
+                          </div>
+
+                          {/* Quantity */}
+                          <div className="min-w-0">
+                            <DualUnitQuantityInput
+                              product={item.product}
+                              quantity={item.quantity}
+                              onChange={(q, dual) => updateQuantity(item.product._id, q, dual)}
+                              min={1}
+                              max={999999}
+                              stockPiecesForRemaining={item.product.inventory?.currentStock ?? 0}
+                              showRemainingAfterSale={false}
+                              showPiecesUnitLabel={false}
+                              showBoxInput={dualUnitShowBoxInputEnabled && !hasDualUnit(item.product)}
+                              showPiecesInput={dualUnitShowPiecesInputEnabled}
+                              inputClassName="w-full min-w-0 text-center h-8 border border-gray-300 rounded px-2"
+                              compact={hasDualUnit(item.product)}
+                            />
+                          </div>
+
+                          {/* Purchase Price (Cost) - 1 column (conditional) - Between Quantity and Rate */}
+                          {showCostPrice && hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) && (
+                            <div className="min-w-0">
+                              <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-8 flex items-center justify-center" title="Cost Price">
+                                {lastPurchasePrices[item.product._id] !== undefined
+                                  ? `${Math.round(lastPurchasePrices[item.product._id])}`
+                                  : item.product.pricing?.cost !== undefined
+                                    ? `${Math.round(item.product.pricing.cost)}`
+                                    : 'N/A'}
+                              </span>
+                            </div>
+                          )}
+
+                          {/* Rate - 1 column */}
+                          <div className="min-w-0 relative">
+                            {(() => {
+                              const effectiveCost = lastPurchasePrices[item.product._id] !== undefined
+                                ? lastPurchasePrices[item.product._id]
+                                : item.product.pricing?.cost;
+                              const isBelowCost = hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) && effectiveCost !== undefined && effectiveCost !== null && item.unitPrice < effectiveCost;
+
+                              return (
+                                <Input
+                                  type="number"
+                                  step="1"
+                                  autoComplete="off"
+                                  value={Math.round(item.unitPrice)}
+                                  onChange={(e) => updateUnitPrice(item.product._id, parseInt(e.target.value) || 0)}
+                                  onFocus={(e) => e.target.select()}
+                                  className={`text-center h-8 ${
+                                    // Check if sale price is less than cost price - highest priority styling (always check)
+                                    isBelowCost
+                                      ? 'bg-red-50 border-red-400 ring-2 ring-red-300'
+                                      : priceStatus[item.product._id] === 'updated'
+                                        ? 'bg-green-50 border-green-300 ring-1 ring-green-200'
+                                        : priceStatus[item.product._id] === 'not-found'
+                                          ? 'bg-yellow-50 border-yellow-300 ring-1 ring-yellow-200'
+                                          : priceStatus[item.product._id] === 'unchanged'
+                                            ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-200'
+                                            : ''
+                                    }`}
+                                  min="0"
+                                  title={
+                                    isBelowCost
+                                      ? `⚠️ WARNING: Sale price ($${Math.round(item.unitPrice)}) is below cost price ($${Math.round(effectiveCost)})`
+                                      : ''
+                                  }
+                                />
+                              );
+                            })()}
+                            {isLastPricesApplied && priceStatus[item.product._id] && (
+                              <div
+                                className="absolute -right-7 top-1/2 transform -translate-y-1/2 flex items-center z-10"
+                                title={
+                                  priceStatus[item.product._id] === 'updated'
+                                    ? 'Price updated from last order'
+                                    : priceStatus[item.product._id] === 'unchanged'
+                                      ? 'Price same as last order'
+                                      : 'Product not found in previous order'
+                                }
+                              >
+                                {priceStatus[item.product._id] === 'updated' && (
+                                  <CheckCircle className="h-4 w-4 text-green-600 bg-white rounded-full" />
+                                )}
+                                {priceStatus[item.product._id] === 'unchanged' && (
+                                  <Info className="h-4 w-4 text-blue-600 bg-white rounded-full" />
+                                )}
+                                {priceStatus[item.product._id] === 'not-found' && (
+                                  <AlertCircle className="h-4 w-4 text-yellow-600 bg-white rounded-full" />
+                                )}
+                              </div>
                             )}
                           </div>
-                        )}
-                      </div>
 
-                      {/* Total - 1 column */}
-                      <div className="min-w-0">
-                        <span className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block w-full min-w-0 text-center h-8 flex items-center justify-center">
-                          {Math.round(totalPrice)}
-                        </span>
-                      </div>
+                          {/* Total - 1 column */}
+                          <div className="min-w-0">
+                            <span className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block w-full min-w-0 text-center h-8 flex items-center justify-center">
+                              {Math.round(totalPrice)}
+                            </span>
+                          </div>
 
-                      {/* Delete Button - 1 column */}
-                      <div className="min-w-0 flex justify-end">
-                        <LoadingButton
-                          onClick={() => removeFromCart(item.product._id)}
-                          isLoading={isRemovingFromCart[item.product._id]}
-                          variant="destructive"
-                          size="sm"
-                          className="h-8 w-8 p-0"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </LoadingButton>
+                          {/* Delete Button - 1 column */}
+                          <div className="min-w-0 flex justify-end">
+                            <LoadingButton
+                              onClick={() => removeFromCart(item.product._id)}
+                              isLoading={isRemovingFromCart[item.product._id]}
+                              variant="destructive"
+                              size="sm"
+                              className="h-8 w-8 p-0"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </LoadingButton>
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </div>
-              );
+                  );
                 })}
               </div>
             </div>
