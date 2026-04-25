@@ -137,8 +137,6 @@ app.get('/health', (req, res) => {
 const path = require('path');
 app.use('/exports', express.static(path.join(__dirname, 'exports')));
 
-// Serve optimized images
-app.use('/api/images', express.static(path.join(__dirname, 'uploads/images/optimized')));
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
