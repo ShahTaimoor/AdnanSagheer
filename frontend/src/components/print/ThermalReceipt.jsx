@@ -37,7 +37,6 @@ const ThermalReceipt = ({
     orderData?._id ||
     'N/A';
 
-  const subtotal = pricing.subtotal || orderData.subtotal || 0;
   const discount = pricing.discountAmount || pricing.discount || orderData.discount || 0;
   const tax = pricing.taxAmount || orderData.tax || 0;
   const shipping = pricing.shipping || 0;
@@ -138,10 +137,6 @@ const ThermalReceipt = ({
       </table>
 
       <div className="thermal-receipt__summary">
-        <div className="thermal-receipt__summary-row">
-          <span>Subtotal:</span>
-          <span>{formatCurrency(subtotal)}</span>
-        </div>
         {discount > 0 && (
           <div className="thermal-receipt__summary-row">
             <span>Discount:</span>
