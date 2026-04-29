@@ -16,6 +16,7 @@ const ThermalReceipt = ({
     contactNumber = '',
     email = ''
   } = companySettings;
+  const receiptFooterText = printSettings?.receiptFooterText || '';
 
   const {
     createdAt = new Date(),
@@ -176,7 +177,12 @@ const ThermalReceipt = ({
         <div className="thermal-receipt__barcode">
           <canvas ref={barcodeRef}></canvas>
         </div>
-        <div>Thank You for Shopping!</div>
+        {receiptFooterText && (
+          <div className="thermal-receipt__custom-footer">
+            {receiptFooterText}
+          </div>
+        )}
+        {!receiptFooterText && <div>Thank You for Shopping!</div>}
         <div style={{ fontSize: '9px', marginTop: '2mm' }}>
           {new Date().toLocaleString()}
         </div>

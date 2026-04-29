@@ -136,6 +136,7 @@ export const Settings2 = () => {
     printSize: 'standard',
     headerText: '',
     footerText: '',
+    receiptFooterText: '',
     invoiceLayout: 'standard',
     logoSize: 100
   });
@@ -779,7 +780,8 @@ export const Settings2 = () => {
           invoiceLayout: settings.printSettings.invoiceLayout || 'standard',
           printSize: (settings.printSettings.invoiceLayout || 'standard') === 'compact' ? '80mm' : 'standard',
           headerText: settings.printSettings.headerText || '',
-          footerText: settings.printSettings.footerText || ''
+          footerText: settings.printSettings.footerText || '',
+          receiptFooterText: settings.printSettings.receiptFooterText || ''
         }));
       }
     }
@@ -900,6 +902,7 @@ export const Settings2 = () => {
           mobilePrintPreview: ps.mobilePrintPreview ?? prev.mobilePrintPreview ?? false,
           headerText: ps.headerText || prev.headerText || '',
           footerText: ps.footerText || prev.footerText || '',
+          receiptFooterText: ps.receiptFooterText || prev.receiptFooterText || '',
           invoiceLayout: ps.invoiceLayout || prev.invoiceLayout || 'standard',
           logoSize: ps.logoSize ?? prev.logoSize ?? 100
         };
@@ -2195,7 +2198,7 @@ export const Settings2 = () => {
 
                 {/* Header and Footer Customization - Hidden for Layout 2 */}
                 {printSettings.invoiceLayout !== 'layout2' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         Header Text (Optional)
@@ -2225,6 +2228,21 @@ export const Settings2 = () => {
                       />
                       <p className="text-xs text-gray-500 mt-1">
                         This text will appear at the bottom of printed documents
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Receipt Footer Message (Optional)
+                      </label>
+                      <Textarea
+                        name="receiptFooterText"
+                        value={printSettings.receiptFooterText}
+                        onChange={handlePrintSettingsChange}
+                        placeholder={"Example:\nThank you for shopping!\nPlease come again."}
+                        rows={3}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Multiline message shown at the bottom of printed receipts
                       </p>
                     </div>
                   </div>
