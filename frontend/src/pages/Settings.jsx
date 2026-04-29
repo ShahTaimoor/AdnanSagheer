@@ -1566,8 +1566,8 @@ export const Settings2 = () => {
                         <div className="flex items-center space-x-5 flex-1 min-w-0">
                           {/* Avatar */}
                           <div className={`h-14 w-14 rounded-2xl flex items-center justify-center flex-shrink-0 text-white font-bold text-xl shadow-sm ${systemUser.role === 'admin' ? 'bg-gradient-to-br from-gray-700 to-gray-900' :
-                              systemUser.role === 'manager' ? 'bg-gradient-to-br from-blue-500 to-blue-700' :
-                                'bg-gradient-to-br from-emerald-400 to-emerald-600'
+                            systemUser.role === 'manager' ? 'bg-gradient-to-br from-blue-500 to-blue-700' :
+                              'bg-gradient-to-br from-emerald-400 to-emerald-600'
                             }`}>
                             {systemUser.firstName?.charAt(0) || ''}{systemUser.lastName?.charAt(0) || ''}
                           </div>
@@ -1590,9 +1590,9 @@ export const Settings2 = () => {
                             <div className="flex flex-wrap items-center gap-2 mt-2.5">
                               {/* Role Badge */}
                               <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm border ${systemUser.role === 'admin' ? 'bg-gray-900 text-white border-gray-900' :
-                                  systemUser.role === 'manager' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                                    systemUser.role === 'cashier' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                                      'bg-gray-50 text-gray-700 border-gray-200'
+                                systemUser.role === 'manager' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                                  systemUser.role === 'cashier' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                                    'bg-gray-50 text-gray-700 border-gray-200'
                                 }`}>
                                 <Shield className="w-3.5 h-3.5 mr-1.5 opacity-70" />
                                 {systemUser.role.charAt(0).toUpperCase() + systemUser.role.slice(1)}
@@ -2939,10 +2939,10 @@ export const Settings2 = () => {
                               onClick={() => handleAddToNav(item)}
                               disabled={isAdded || bottomNavConfig.length >= 5}
                               className={`p-1.5 rounded-lg transition-all ${isAdded
-                                  ? 'text-green-500 cursor-default'
-                                  : bottomNavConfig.length >= 5
-                                    ? 'text-gray-300 cursor-not-allowed'
-                                    : 'text-blue-600 hover:bg-blue-100 bg-blue-50'
+                                ? 'text-green-500 cursor-default'
+                                : bottomNavConfig.length >= 5
+                                  ? 'text-gray-300 cursor-not-allowed'
+                                  : 'text-blue-600 hover:bg-blue-100 bg-blue-50'
                                 }`}
                             >
                               {isAdded ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
