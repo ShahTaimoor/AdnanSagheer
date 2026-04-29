@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { formatQuantityDisplay } from '../utils/dualUnitUtils';
+import ThermalReceipt from './print/ThermalReceipt';
 
 const PrintDocument = ({
     companySettings,
@@ -51,7 +52,9 @@ const PrintDocument = ({
     const saleOrPurchaseClass = !isReceipt ? (isSale ? ' print-document--sale' : isPurchase ? ' print-document--purchase' : '') : '';
     const receiptTypeClass = isReceipt ? (isBank ? ' print-document--bank' : isCash ? ' print-document--cash' : '') : '';
 
-    const printClassName = `print-document${invoiceLayout === 'layout2' ? ' print-document--layout2' : ''}${isReceipt ? ' print-document--receipt' : ''}${isMobileLayout ? ' print-document--mobile' : ''}${saleOrPurchaseClass}${receiptTypeClass}`;
+    const isCompact = invoiceLayout === 'compact';
+
+    const printClassName = `print-document${invoiceLayout === 'layout2' ? ' print-document--layout2' : ''}${isReceipt ? ' print-document--receipt' : ''}${isCompact ? ' print-document--compact' : ''}${isMobileLayout ? ' print-document--mobile' : ''}${saleOrPurchaseClass}${receiptTypeClass}`;
 
     const formatDate = (date) =>
         new Date(date || new Date()).toLocaleDateString('en-GB', {
@@ -110,6 +113,8 @@ const PrintDocument = ({
     const resolvedCompanySubtitle = resolvedDocumentTitle;
     const resolvedCompanyAddress = safeCompanySettings.address || '';
     const resolvedCompanyPhone = safeCompanySettings.contactNumber || safeCompanySettings.phone || '';
+    const taxSystemEnabled = safeCompanySettings.taxEnabled === true;
+    const effectiveShowTax = showTax && taxSystemEnabled;
 
     const partyInfo = useMemo(() => {
         if (!orderData) {
@@ -630,6 +635,23 @@ const PrintDocument = ({
         );
     }
 
+    // ==========================================
+    // Layout: Compact Thermal Receipt
+    // ==========================================
+    if (invoiceLayout === 'compact') {
+        return (
+            <div className={printClassName}>
+                {children}
+                <ThermalReceipt
+                    companySettings={safeCompanySettings}
+                    orderData={orderData}
+                    printSettings={printSettings}
+                    documentTitle={resolvedDocumentTitle}
+                />
+            </div>
+        );
+    }
+
     return (
         <div className={printClassName}>
             {/* Option to inject content (like toolbar) at the top that is hidden in print via CSS if needed */}
@@ -820,7 +842,7 @@ const PrintDocument = ({
                         <span>Subtotal</span>
                         <span>{formatCurrency(computedSubtotal)}</span>
                     </div>
-                    {showTax && (
+                    {effectiveShowTax && (
                         <div className="print-document__summary-row">
                             <span>Tax</span>
                             <span>{formatCurrency(taxValue)}</span>

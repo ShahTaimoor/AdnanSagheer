@@ -128,12 +128,10 @@ export const Sales = ({ tabId, editData }) => {
   const [directPrintOrder, setDirectPrintOrder] = useState(null);
   const [currentOrder, setCurrentOrder] = useState(null);
   const [appliedDiscounts, setAppliedDiscounts] = useState([]);
-  const [isTaxExempt, setIsTaxExempt] = useState(true);
   const [directDiscount, setDirectDiscount] = useState({ type: 'amount', value: 0 });
   const [isAdvancePayment, setIsAdvancePayment] = useState(false);
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [autoGenerateInvoice, setAutoGenerateInvoice] = useState(true);
-  const [autoPrint, setAutoPrint] = useState(false); // Default to false as requested
   const [showSalesDetailsFields, setShowSalesDetailsFields] = useState(false);
   const [billDate, setBillDate] = useState(getLocalDateString()); // Default to current date for backdating invoices
   const [notes, setNotes] = useState('');
@@ -176,6 +174,9 @@ export const Sales = ({ tabId, editData }) => {
   const dualUnitShowBoxInputEnabled = companySettings.orderSettings?.dualUnitShowBoxInput !== false;
   const dualUnitShowPiecesInputEnabled = companySettings.orderSettings?.dualUnitShowPiecesInput !== false;
   const showSalesDiscountCodeEnabled = companySettings.orderSettings?.showSalesDiscountCode === true;
+  const autoPrintEnabled = companySettings.printSettings?.autoPrintAfterSale !== false;
+  const taxSystemEnabled = companySettings.taxEnabled === true;
+  const globalTaxPercent = Math.min(100, Math.max(0, Number(companySettings.defaultTaxRate ?? 0)));
   const [showProfit, setShowProfit] = useState(false);
 
   // Sync state with global setting if it changes
@@ -272,11 +273,6 @@ export const Sales = ({ tabId, editData }) => {
           totalPrice: item.totalPrice || (item.quantity * (item.unitPrice || item.price || (item.product?.pricing?.retail || 0)))
         }));
         setCart(formattedItems);
-      }
-
-      // Set tax exempt status
-      if (editData.isTaxExempt !== undefined) {
-        setIsTaxExempt(editData.isTaxExempt);
       }
 
       // Restore existing discounts in edit mode (code + manual)
@@ -540,7 +536,7 @@ export const Sales = ({ tabId, editData }) => {
 
   const totalDiscountAmount = codeDiscountAmount + directDiscountAmount;
   const subtotalAfterDiscount = subtotal - totalDiscountAmount;
-  const tax = isTaxExempt ? 0 : subtotalAfterDiscount * 0.08;
+  const tax = taxSystemEnabled ? subtotalAfterDiscount * (globalTaxPercent / 100) : 0;
   const total = subtotalAfterDiscount + tax;
   const change = amountPaid - total;
   const manualDiscountDisplay = Math.max(0, Math.round(directDiscountAmount || 0));
@@ -1053,7 +1049,6 @@ export const Sales = ({ tabId, editData }) => {
           setSelectedCustomer(null);
           setCustomerSearchTerm('');
           setAppliedDiscounts([]);
-          setIsTaxExempt(true);
           setDirectDiscount({ type: 'amount', value: 0 });
           setIsAdvancePayment(false);
           setInvoiceNumber('');
@@ -1079,6 +1074,23 @@ export const Sales = ({ tabId, editData }) => {
     }
   };
 
+  const resetSaleDraft = useCallback(({ resetBillDate = false } = {}) => {
+    setCart([]);
+    setHighlightedCartLineIndex(null);
+    setAmountPaid(0);
+    setAppliedDiscounts([]);
+    setDirectDiscount({ type: 'amount', value: 0 });
+    setNotes('');
+    setInvoiceNumber('');
+    if (resetBillDate) {
+      setBillDate(getLocalDateString());
+    }
+    setLastPurchasePrices({});
+    setOriginalPrices({});
+    setIsLastPricesApplied(false);
+    setPriceStatus({});
+  }, []);
+
 
 
   const handleCreateOrder = useCallback(async (orderData) => {
@@ -1096,32 +1108,23 @@ export const Sales = ({ tabId, editData }) => {
       const result = await createSale({ payload: orderData }).unwrap();
       showSuccessToast('Sale created successfully');
 
+      // Force refresh product search cache so stock quantities reflect immediately
+      // even when browser print dialog temporarily interrupts UI lifecycle.
+      try {
+        refetchProducts?.();
+      } catch {
+        // ignore cache refresh errors; sale has already been completed
+      }
+
       // RTK Query invalidatesTags will automatically refetch Products and Customers
       // No need to manually refetch - it happens automatically via cache invalidation
       // This prevents React warnings about updating components during render
 
-      // Reset cart and form
-      setCart([]);
-      setHighlightedCartLineIndex(null);
-      // Don't reset selectedCustomer immediately - let it update from refetched data
-      // setSelectedCustomer(null);
-      setAmountPaid(0);
-      setAppliedDiscounts([]);
-      setDirectDiscount({ type: 'amount', value: 0 });
-      setNotes('');
-      setInvoiceNumber('');
-      setBillDate(getLocalDateString()); // Reset to current date
-      setLastPurchasePrices({});
-      setOriginalPrices({});
-      setIsLastPricesApplied(false);
-      setPriceStatus({});
-
-      // Show print modal if order was created and autoPrint is enabled
-      if (result?.order) {
-        if (autoPrint) {
-          setCurrentOrder(result.order);
-          setShowPrintModal(true);
-        }
+      if (result?.order && autoPrintEnabled) {
+        setDirectPrintOrder(result.order);
+      } else {
+        // No print flow: complete and clear immediately.
+        resetSaleDraft({ resetBillDate: true });
       }
       resetSubmittingState();
     } catch (error) {
@@ -1145,7 +1148,7 @@ export const Sales = ({ tabId, editData }) => {
         resetSubmittingState();
       }
     }
-  }, [createSale, resetSubmittingState]);
+  }, [createSale, resetSubmittingState, autoPrintEnabled, resetSaleDraft, refetchProducts]);
 
   const handleUpdateOrder = useCallback(async (orderId, updateData) => {
     // Double-check: prevent duplicate calls even if handleCheckout guard fails
@@ -1162,31 +1165,22 @@ export const Sales = ({ tabId, editData }) => {
       const result = await updateOrder({ id: orderId, ...updateData }).unwrap();
       showSuccessToast('Order updated successfully');
 
+      // Keep product stock in sync immediately after update/create actions.
+      try {
+        refetchProducts?.();
+      } catch {
+        // ignore cache refresh errors; order update already succeeded
+      }
+
       // RTK Query invalidatesTags will automatically refetch Products and Customers
       // No need to manually refetch - it happens automatically via cache invalidation
       // This prevents React warnings about updating components during render
 
-      // Reset cart and form
-      setCart([]);
-      setHighlightedCartLineIndex(null);
-      // Don't reset selectedCustomer immediately - let it update from refetched data
-      // setSelectedCustomer(null);
-      setAmountPaid(0);
-      setAppliedDiscounts([]);
-      setDirectDiscount({ type: 'amount', value: 0 });
-      setNotes('');
-      setInvoiceNumber('');
-      setLastPurchasePrices({});
-      setOriginalPrices({});
-      setIsLastPricesApplied(false);
-      setPriceStatus({});
-
-      // Show print modal if order was updated and autoPrint is enabled
-      if (result?.order) {
-        if (autoPrint) {
-          setCurrentOrder(result.order);
-          setShowPrintModal(true);
-        }
+      if (result?.order && autoPrintEnabled) {
+        setDirectPrintOrder(result.order);
+      } else {
+        // No print flow: complete and clear immediately.
+        resetSaleDraft();
       }
       resetSubmittingState();
     } catch (error) {
@@ -1209,7 +1203,7 @@ export const Sales = ({ tabId, editData }) => {
         resetSubmittingState();
       }
     }
-  }, [updateOrder, resetSubmittingState, isSubmittingRef]);
+  }, [updateOrder, resetSubmittingState, isSubmittingRef, autoPrintEnabled, resetSaleDraft, refetchProducts]);
 
   const handleCheckout = useCallback((e) => {
     // Prevent default and stop propagation to avoid any event bubbling issues
@@ -1319,7 +1313,7 @@ export const Sales = ({ tabId, editData }) => {
       subtotal: subtotal,
       discountAmount: totalDiscountAmount,
       tax: tax,
-      isTaxExempt: isTaxExempt,
+      isTaxExempt: !taxSystemEnabled,
       total: total,
       invoiceNumber: invoiceNumber,
       billDate: billDate || undefined, // Include billDate for backdating (invoice number will be based on this)
@@ -1411,7 +1405,7 @@ export const Sales = ({ tabId, editData }) => {
     subtotal,
     totalDiscountAmount,
     tax,
-    isTaxExempt,
+    taxSystemEnabled,
     invoiceNumber,
     billDate,
     notes,
@@ -1470,7 +1464,7 @@ export const Sales = ({ tabId, editData }) => {
         {/* Customer Selection and Information Row */}
         <div className={`flex ${isMobile ? 'flex-col space-y-4' : 'items-start space-x-12'}`}>
           {/* Customer Selection */}
-          <div className={`${isMobile ? 'w-full' : 'w-[750px] flex-shrink-0'}`}>
+          <div className={`${isMobile ? 'w-full' : 'w-full max-w-3xl flex-shrink-0'}`}>
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <label className="block text-sm font-medium text-gray-700">
@@ -2290,32 +2284,6 @@ export const Sales = ({ tabId, editData }) => {
                       })()}
                     </div>
 
-                    {/* Tax Exemption Option */}
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Tax Status
-                      </label>
-                      <div className="flex items-center space-x-2 px-3 py-2 border border-gray-200 rounded h-10">
-                        <Input
-                          type="checkbox"
-                          id="taxExemptMobile"
-                          checked={isTaxExempt}
-                          onChange={(e) => setIsTaxExempt(e.target.checked)}
-                          className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                        />
-                        <div className="flex-1">
-                          <label htmlFor="taxExemptMobile" className="text-sm font-medium text-gray-700 cursor-pointer">
-                            Tax Exempt
-                          </label>
-                        </div>
-                        {isTaxExempt && (
-                          <div className="text-green-600 text-sm font-medium">
-                            ✓
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
                     {/* Invoice Number */}
                     <div>
                       <div className="flex items-center justify-between mb-1">
@@ -2430,32 +2398,6 @@ export const Sales = ({ tabId, editData }) => {
                       </select>
                     </div>
 
-                    {/* Tax Exemption Option */}
-                    <div className="flex flex-col w-40">
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Tax Status
-                      </label>
-                      <div className="flex items-center space-x-1 px-2 py-1 border border-gray-200 rounded h-8">
-                        <Input
-                          type="checkbox"
-                          id="taxExempt"
-                          checked={isTaxExempt}
-                          onChange={(e) => setIsTaxExempt(e.target.checked)}
-                          className="h-3 w-3 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                        />
-                        <div className="flex-1">
-                          <label htmlFor="taxExempt" className="text-xs font-medium text-gray-700 cursor-pointer">
-                            Tax Exempt
-                          </label>
-                        </div>
-                        {isTaxExempt && (
-                          <div className="text-green-600 text-xs font-medium">
-                            ✓
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
                     {/* Invoice Number */}
                     <div className="flex flex-col w-72">
                       <div className="flex items-center gap-3 mb-1">
@@ -2549,9 +2491,9 @@ export const Sales = ({ tabId, editData }) => {
                       <span className="text-xl font-semibold tabular-nums text-red-600">-{Math.round(totalDiscountAmount)}</span>
                     </div>
                   )}
-                  {!isTaxExempt && (
+                  {taxSystemEnabled && tax > 0 && (
                     <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-muted-foreground">Tax (8%):</span>
+                      <span className="text-sm font-medium text-muted-foreground">Tax ({globalTaxPercent}%):</span>
                       <span className="text-xl font-semibold tabular-nums text-foreground">{Math.round(tax)}</span>
                     </div>
                   )}
@@ -2840,7 +2782,7 @@ export const Sales = ({ tabId, editData }) => {
                                 advanceBalance: selectedCustomer.advanceBalance
                               } : null,
                               items: mapCartItemsForInvoicePrint(cart),
-                              pricing: { subtotal, discountAmount: totalDiscountAmount, taxAmount: tax, isTaxExempt, total },
+                              pricing: { subtotal, discountAmount: totalDiscountAmount, taxAmount: tax, isTaxExempt: !taxSystemEnabled, total },
                               payment: {
                                 method: paymentMethod,
                                 bankAccount: paymentMethod === 'bank' ? selectedBankAccount : null,
@@ -2882,7 +2824,7 @@ export const Sales = ({ tabId, editData }) => {
                                 advanceBalance: selectedCustomer.advanceBalance
                               } : null,
                               items: mapCartItemsForInvoicePrint(cart),
-                              pricing: { subtotal, discountAmount: totalDiscountAmount, taxAmount: tax, isTaxExempt, total },
+                              pricing: { subtotal, discountAmount: totalDiscountAmount, taxAmount: tax, isTaxExempt: !taxSystemEnabled, total },
                               payment: {
                                 method: paymentMethod,
                                 bankAccount: paymentMethod === 'bank' ? selectedBankAccount : null,
@@ -2906,18 +2848,6 @@ export const Sales = ({ tabId, editData }) => {
                       </DropdownMenuContent>
                     </DropdownMenu>
                   )}
-                  <div className="flex items-center space-x-2 px-2">
-                    <Input
-                      type="checkbox"
-                      id="autoPrint"
-                      checked={autoPrint}
-                      onChange={(e) => setAutoPrint(e.target.checked)}
-                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                    />
-                    <label htmlFor="autoPrint" className="text-sm font-medium text-gray-700 cursor-pointer">
-                      Print after sale
-                    </label>
-                  </div>
                   <LoadingButton
                     onClick={handleCheckout}
                     isLoading={isSubmitting || isCreatingSale || isUpdatingOrder}
@@ -2990,7 +2920,10 @@ export const Sales = ({ tabId, editData }) => {
           orderData={directPrintOrder}
           documentTitle="Sales Invoice"
           partyLabel="Customer"
-          onComplete={() => setDirectPrintOrder(null)}
+          onComplete={() => {
+            resetSaleDraft({ resetBillDate: true });
+            setDirectPrintOrder(null);
+          }}
         />
       )}
 
@@ -3000,6 +2933,9 @@ export const Sales = ({ tabId, editData }) => {
         onClose={() => {
           setShowPrintModal(false);
           setCurrentOrder(null);
+        }}
+        onAfterPrint={() => {
+          resetSaleDraft({ resetBillDate: true });
         }}
         orderData={currentOrder}
         documentTitle="Sales Invoice"

@@ -965,12 +965,12 @@ export const Suppliers = () => {
 
   return (
     <div className="space-y-4 xl:space-y-6 min-w-0">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sm:gap-0">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Suppliers</h1>
-          <p className="text-sm sm:text-base text-gray-600 mt-1">Manage your supplier relationships and information</p>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h1 className="text-lg sm:text-3xl font-bold text-gray-900 truncate">Suppliers</h1>
+          <p className="hidden sm:block text-sm sm:text-base text-gray-600 mt-1">Manage your supplier relationships and information</p>
         </div>
-        <div className="flex-shrink-0 flex flex-wrap items-center gap-2 w-full sm:w-auto">
+        <div className="flex-shrink-0 flex items-center gap-2 overflow-x-auto">
           <Button
             onClick={() => handleAddNew()}
             variant="default"
@@ -1055,7 +1055,7 @@ export const Suppliers = () => {
         <div className="card w-full min-w-0 overflow-hidden">
           <div className="card-content p-0 w-full min-w-0 overflow-x-auto">
             {/* Table Header - Hidden on mobile/tablet */}
-            <div className="hidden lg:block bg-gray-50 px-4 xl:px-8 py-3 xl:py-4 border-b border-gray-200 min-w-[880px]">
+            <div className="hidden lg:block bg-gray-50 px-4 xl:px-8 py-3 xl:py-4 border-b border-gray-200 min-w-[760px] xl:min-w-[880px]">
               <div className="grid grid-cols-12 gap-3 xl:gap-6 items-center">
                 <div className="col-span-4">
                   <h3 className="text-sm lg:text-base font-medium text-gray-700">Company Name</h3>
@@ -1175,7 +1175,7 @@ export const Suppliers = () => {
                   </div>
 
                   {/* Desktop Table Layout */}
-                  <div className="hidden lg:grid grid-cols-12 gap-3 xl:gap-6 items-center min-w-[880px]">
+                  <div className="hidden lg:grid grid-cols-12 gap-3 xl:gap-6 items-center min-w-[760px] xl:min-w-[880px]">
                     {/* Company Name & Contact Person */}
                     <div className="col-span-4">
                       <div className="flex items-center space-x-3 lg:space-x-4">
